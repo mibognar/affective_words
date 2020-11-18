@@ -1,0 +1,108 @@
+---
+title: "affective_analysis"
+output: html_document
+---
+
+```{r message=FALSE}
+library(stringr)
+
+library(tidyverse)
+```
+
+## Regex Test
+```{r}
+y <- "Jelöld be, hogy mennyire vált ki belőled boldogtalan, vagy boldog érzéseket a szó olvasása! - véraláfutás"
+y_word = str_extract(y, "[^- ]*$")
+```
+
+## import csv file to dataframe
+
+```{r}
+mydata = read_csv("questionnaire/pilot/Affective_Words_pilot.csv")
+label = mydata %>% 
+  slice(1) %>%
+  select(matches("Valence|Arousal")) %>%
+  gather("question_id","text") %>% 
+  mutate(word=str_extract(text, "[^- ]*$")) %>% 
+  select(-text)
+
+raw_data = mydata %>% 
+  slice(-(1:2)) %>% 
+  filter(lubridate::as_datetime(RecordedDate)>lubridate::as_datetime("2020-11-12 01:00:00"),
+         Finished=="True") %>% 
+  select(-StartDate,-EndDate, -RecordedDate, -Status, -Progress, -`Duration (in seconds)`, -Finished, -DistributionChannel, -UserLanguage, -Q14, -Q16) %>% 
+  gather("question_id","rating",-ResponseId) %>% 
+  left_join(.,label,by="question_id") %>% 
+  drop_na(rating) %>% 
+  mutate(rating=as.integer(str_extract(rating,"[:digit:]")),
+         question_id=str_sub(question_id,1,7))
+
+participants = raw_data %>% 
+  group_by(ResponseId) %>%
+  filter(sd(rating)>1.5)
+  
+
+results <- participants %>% 
+  group_by(word,question_id) %>% 
+  summarise(mean_rating=mean(rating),median_rating=median(rating),sd_rating=sd(rating),n_rating=n())
+
+results2 <- results %>% 
+  pivot_wider(-question_id,values_from = c(mean_rating, median_rating, sd_rating, n_rating),names_from = question_id,names_glue="{question_id}_{.value}" )
+
+
+cor.test(results2$Valence_mean_rating,results2$Arousal_mean_rating,"two.sided")
+
+results %>%
+  select(-sd_rating,-n_rating,-median_rating) %>% 
+  spread(question_id,mean_rating) %>% 
+  ggplot()+
+  aes(x=Arousal,y=Valence)+
+  geom_jitter() + 
+  geom_text(aes(label=word),size=1)
+
+
+results2 %>% 
+  ggplot() +
+  aes(x=Arousal_mean_rating,y=Valence_mean_rating)+
+  geom_jitter()+
+  geom_text(aes(label=word),size=2)
+```
+
+```{r}
+first_batch = read_csv("wordlists/first_batch_final.csv")
+translations = first_batch %>% 
+  select(translation,valence_group)
+
+translations = translations %>% 
+  left_join(.,results2, by=c("translation"="word"))
+
+translations<- translations %>% 
+  mutate(new_valence_group = case_when(
+    Valence_mean_rating >= 7 ~ "pos",
+    Valence_mean_rating <= 3 ~ "neg",
+    Valence_mean_rating <=6 & Valence_mean_rating>=4 ~ "neu"
+  ))
+
+translations = translations %>% 
+  filter(!is.na(Valence_mean_rating))
+
+translations = translations %>% 
+  mutate(dropped = case_when(
+    valence_group == new_valence_group ~ "kept",
+    TRUE ~ "dropped"
+  ))
+
+myplot = translations %>% 
+  ggplot() +
+  aes(x=Arousal_mean_rating,y=Valence_mean_rating, color=new_valence_group)+
+  geom_jitter() + labs(x="Arousal",y="Valence", color="Valence group")
+
+ggsave("affective_words.jpg",myplot, width = 10, height = 5, dpi = 500, units = "in", device='png')
+translations %>% 
+  count(dropped)
+
+translations %>% 
+  count()
+```
+
+
